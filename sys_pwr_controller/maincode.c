@@ -14,6 +14,7 @@
 // MINPWRSEC is a value from 1 to 59
 #define MINPWRSEC 2
 #define DEFAULTINTERVALSEC 30
+#define I2CADDR 0x40
 // P1.3 LED
 #define LED_ON P1OUT |= (0x01 << 3)
 #define LED_OFF P1OUT &= ~(0x01 << 3)
@@ -31,6 +32,10 @@
 #define READINPUTS 0x69
 #define WRITEOUTPUTS 0x70
 #define ACTMAX 0x70
+// external input events
+#define INEVENT_NONE 0
+#define INEVENT_START 1
+#define INEVENT_PROGRESS 2
 
 #define STORAGE_MAX 64
 // action states
@@ -43,11 +48,9 @@
 #define ON2 2
 
 // global vars
-unsigned char i2c_addr;
-unsigned char rxctr;
+unsigned char xctr;
 unsigned char rxbuf[4];
 unsigned char txctr;
-unsigned char txbuf[2];
 unsigned char wakeperiodsec;
 unsigned char wakeperiodmin;
 unsigned char stored_sec;
@@ -58,6 +61,7 @@ unsigned char storage_idx;
 // other
 unsigned char action;
 unsigned char pwrstate;
+unsigned char input_event;
 
 // function prototypes
 int i2c_rx_callback(unsigned char);
@@ -77,23 +81,21 @@ __interrupt void Timer_A (void)
 __interrupt void port1_isr(void)
 {
     P1IFG = 0; // reset interrupt
-    stored_sec=255;
-    pwrstate = ON1;
-    PWR_ENABLE;
+    if (input_event==INEVENT_NONE) {
+        input_event=INEVENT_START;
+    }
     __bic_SR_register_on_exit(LPM3_bits);
 }
 
 // functions
 void i2c_start_callback()
 {
-    //LED_ON; // start received, turn LED on
-    rxctr = 0;
-    txctr = 0;
+    xctr = 0;
 }
 
 int i2c_rx_callback(unsigned char RxData)
 {
-    if (rxctr == 0) { // read the command that has arrived
+    if (xctr == 0) { // read the command that has arrived
         if (RxData < STORAGE_MAX) { // command is storage related
             action = STORAGE;
             storage_idx = RxData;
@@ -107,17 +109,17 @@ int i2c_rx_callback(unsigned char RxData)
                 storage_idx++;
             }
         } else if (action == TIME) { // we expect 4 bytes (BCD hour, min, sec, and AM/PM indication)
-            if (rxctr<5) {
-                rxbuf[rxctr-1] = RxData;
-                if (rxctr==4) {
+            if (xctr<5) {
+                rxbuf[xctr-1] = RxData;
+                if (xctr==4) {
                     setTime(rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
                     action = IDLE;
                 }
             }
         } else if (action == DATE) { // we expect 3 bytes (year from 2000, month, date)
-            if (rxctr<4) {
-                rxbuf[rxctr-1] = RxData;
-                if (rxctr==3) {
+            if (xctr<4) {
+                rxbuf[xctr-1] = RxData;
+                if (xctr==3) {
                     setDate(((int)rxbuf[0])+2000, rxbuf[1], rxbuf[2]);
                     action = IDLE;
                 }
@@ -143,7 +145,7 @@ int i2c_rx_callback(unsigned char RxData)
             }
         }
     }
-    rxctr++;
+    xctr++;
     return TI_USI_STAY_LPM ; // stay in LPM
 }
 
@@ -152,11 +154,13 @@ int i2c_tx_callback(int* TxDataPtr)
     if (action == STORAGE) { // send contents of storage
         *(unsigned char*)TxDataPtr = storage[storage_idx];
         storage_idx++;
+#ifdef MOREFLASH // Need more Flash to implement this
         if (storage_idx >= STORAGE_MAX) {
             storage_idx = 0; // wrap around
         }
+#endif
     } else if (action == TIME) {
-        switch(txctr) {
+        switch(xctr) {
             case 0:
                 *(unsigned char*)TxDataPtr = TI_hour;
                 break;
@@ -173,7 +177,7 @@ int i2c_tx_callback(int* TxDataPtr)
                 break;
         }
     } else if (action == DATE) {
-        switch(txctr) {
+        switch(xctr) {
             case 0:
                 *(unsigned char*)TxDataPtr = (unsigned char)(TI_year-2000);
                 break;
@@ -190,7 +194,7 @@ int i2c_tx_callback(int* TxDataPtr)
         *(unsigned char*)TxDataPtr = P1IN;
     }
 
-    txctr++;  // Increment tx pointer
+    xctr++;  // Increment tx pointer
     return TI_USI_STAY_LPM ; // stay in LPM
 }
 
@@ -199,12 +203,10 @@ void main (void)
 {
     WDTCTL = WDTPW | WDTHOLD; // stop watchdog timer
     BCSCTL3 |= XCAP_3;    // select 12pF caps
-    _delay_cycles(10000); // allow xtal time to start up
+    //_delay_cycles(10000); // allow xtal time to start up
 
     // global var initialization
-    i2c_addr = 0x40;
-    rxctr = 0;
-    txctr = 0;
+    xctr = 0;
     storage_idx = 0;
     action = IDLE;
     wakeperiodsec = DEFAULTINTERVALSEC;
@@ -214,6 +216,7 @@ void main (void)
     stored_sec= 0;
     stored_min = 0;
     pwrstate = PWROFF;
+    input_event = INEVENT_NONE;
 
     // input/output initialization
     P1OUT = 0;
@@ -225,7 +228,7 @@ void main (void)
     P1IES |= 0x01; // interrupt on low-to-high transition of P1.0
     P1IE |= 0x01; // interrupt enable for P1.0
 
-    TI_USI_I2C_SlaveInit(i2c_addr, i2c_start_callback, i2c_rx_callback, i2c_tx_callback);
+    TI_USI_I2C_SlaveInit(I2CADDR, i2c_start_callback, i2c_rx_callback, i2c_tx_callback);
 
     CCR0 = 32768-1;
     TACTL = TASSEL_1+MC_1; // ACLK, upmode
@@ -234,8 +237,13 @@ void main (void)
 
     while(1) {
         __bis_SR_register(LPM3_bits); // enter LPM3, clock will be updated
-        //LED_TOGGLE;
         stored_sec++;
+        if (input_event==INEVENT_START) {
+            input_event=INEVENT_PROGRESS;
+            stored_sec=0;
+            pwrstate = ON1;
+            PWR_ENABLE;
+        }
         if (wakeperiodmin>0) {
             if (stored_sec>=60) {
                 stored_min++;
@@ -259,6 +267,9 @@ void main (void)
                     pwrstate = ON2;
                 } else {
                     PWR_DISABLE;
+                    if (input_event==INEVENT_PROGRESS) {
+                        input_event = INEVENT_NONE;
+                    }
                 }
             }
         }
@@ -268,6 +279,9 @@ void main (void)
             } else {
                 pwrstate = PWROFF;
                 PWR_DISABLE;
+                if (input_event==INEVENT_PROGRESS) {
+                    input_event = INEVENT_NONE;
+                }
             }
         }
 

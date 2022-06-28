@@ -1,0 +1,1 @@
+"./RTC_Calendar.obj" "./RTC_TA.obj" "./USI_I2CSlave.obj" "./maincode.obj" "../lnk_msp430g2212.cmd" -llibc.a 
