@@ -44,7 +44,9 @@
 // other
 #define RXMAX 4
 #define PWROFF 0
+// power state ON1 is for the MINPWRSEC length of time
 #define ON1 1
+// power state ON2 is when the power is in STAYAWAKE due to external input
 #define ON2 2
 
 // global vars
@@ -76,7 +78,7 @@ __interrupt void Timer_A (void)
     incrementSeconds();
     __bic_SR_register_on_exit(LPM3_bits);
 }
-
+// Input Pin interrupt service routine
 #pragma vector=PORT1_VECTOR
 __interrupt void port1_isr(void)
 {
@@ -198,6 +200,24 @@ int i2c_tx_callback(int* TxDataPtr)
     return TI_USI_STAY_LPM ; // stay in LPM
 }
 
+void power_enable_and_zeroise_sec(void) {
+    stored_sec=0;
+    pwrstate = ON1;
+    PWR_ENABLE;
+}
+
+void power_disable_or_keepawake(void) {
+    if (STAYAWAKE) {
+        pwrstate = ON2;
+    } else {
+        pwrstate = PWROFF;
+        PWR_DISABLE;
+        if (input_event==INEVENT_PROGRESS) {
+            input_event = INEVENT_NONE;
+        }
+    }
+}
+
 // ************* main function ******************
 void main (void)
 {
@@ -205,7 +225,7 @@ void main (void)
     BCSCTL3 |= XCAP_3;    // select 12pF caps
     //_delay_cycles(10000); // allow xtal time to start up
 
-    // global var initialization
+    // all global vars initialized within main(), done here to save code space
     xctr = 0;
     storage_idx = 0;
     action = IDLE;
@@ -218,7 +238,7 @@ void main (void)
     pwrstate = PWROFF;
     input_event = INEVENT_NONE;
 
-    // input/output initialization
+    // input/output registers initialization
     P1OUT = 0;
     P2OUT = 0;
     P1DIR = 0x3c; // Set P1.2, 1.3, 1.4, 1.5 as outputs
@@ -228,65 +248,49 @@ void main (void)
     P1IES &= ~0x01; // interrupt on low-to-high transition of P1.0
     P1IE |= 0x01; // interrupt enable for P1.0
 
+    // set up the I2C slave interface
     TI_USI_I2C_SlaveInit(I2CADDR, i2c_start_callback, i2c_rx_callback, i2c_tx_callback);
 
+    // set up the timer
     CCR0 = 32768-1;
     TACTL = TASSEL_1+MC_1; // ACLK, upmode
     CCTL0 |= CCIE; // enable CCRO interrupt
     __bis_SR_register(GIE); // enable interrupts
 
+    // main loop
     while(1) {
         __bis_SR_register(LPM3_bits); // enter LPM3, clock will be updated
         stored_sec++;
+        // handle external input, enable power to the system if new input event
         if (input_event==INEVENT_START) {
             input_event=INEVENT_PROGRESS;
-            stored_sec=0;
-            pwrstate = ON1;
-            PWR_ENABLE;
+            power_enable_and_zeroise_sec();
         }
-        if (wakeperiodmin>0) {
+        // check if we need to enable power to the system based on configured interval
+        if (wakeperiodmin>0) { // wake interval is set in minutes
             if (stored_sec>=60) {
                 stored_min++;
                 if (stored_min>=wakeperiodmin) {
-                    pwrstate = ON1;
-                    PWR_ENABLE;
+                    power_enable_and_zeroise_sec(); // go to power state ON1
                     stored_min=0;
-                    stored_sec=0;
                 }
             }
-        } else {
+        } else { // wake interval is set in seconds
             if (stored_sec>=wakeperiodsec) {
-                stored_sec=0;
-                pwrstate = ON1;
-                PWR_ENABLE;
+                power_enable_and_zeroise_sec(); // go to power state ON1
             }
         }
+        // check if we need to disable power to the system
         if (pwrstate==ON1) {
             if (stored_sec>=MINPWRSEC) {
-                if (STAYAWAKE) {
-                    pwrstate = ON2;
-                } else {
-                    pwrstate = PWROFF;
-                    PWR_DISABLE;
-                    if (input_event==INEVENT_PROGRESS) {
-                        input_event = INEVENT_NONE;
-                    }
-                }
+                power_disable_or_keepawake(); // either go to power off, or go to ON2 if STAYAWAKE occurs
             }
         }
         if (pwrstate == ON2) {
-            if (STAYAWAKE) {
-                //
-            } else {
-                pwrstate = PWROFF;
-                PWR_DISABLE;
-                if (input_event==INEVENT_PROGRESS) {
-                    input_event = INEVENT_NONE;
-                }
-            }
+            power_disable_or_keepawake(); // either go to power off, or stay in ON2 if STAYAWAKE
         }
 
-        _NOP(); // set breakpoint here to see 1 second int.
+        //_NOP(); // set breakpoint here to see 1 second int.
     }
 }
 
