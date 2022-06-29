@@ -225,7 +225,7 @@ void main (void)
     P2DIR = 0x2f; // Set P2.0, 2.1, 2.2, 2.3, 2.5 as outputs
     P1REN |= 0x03; // resistor enabled for P1.0, 1.1 (to act as pull-down)
     P2REN |= 0x10; // resistor enabled for P2.4 (to act as pull-down)
-    P1IES |= 0x01; // interrupt on low-to-high transition of P1.0
+    P1IES &= ~0x01; // interrupt on low-to-high transition of P1.0
     P1IE |= 0x01; // interrupt enable for P1.0
 
     TI_USI_I2C_SlaveInit(I2CADDR, i2c_start_callback, i2c_rx_callback, i2c_tx_callback);
