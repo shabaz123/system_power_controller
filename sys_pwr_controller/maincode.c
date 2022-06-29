@@ -266,6 +266,7 @@ void main (void)
                 if (STAYAWAKE) {
                     pwrstate = ON2;
                 } else {
+                    pwrstate = PWROFF;
                     PWR_DISABLE;
                     if (input_event==INEVENT_PROGRESS) {
                         input_event = INEVENT_NONE;
