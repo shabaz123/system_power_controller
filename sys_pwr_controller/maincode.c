@@ -181,7 +181,7 @@ int i2c_tx_callback(int* TxDataPtr)
     } else if (action == DATE) {
         switch(xctr) {
             case 0:
-                *(unsigned char*)TxDataPtr = (unsigned char)(TI_year-2000);
+                *(unsigned char*)TxDataPtr = (unsigned char)(TI_year); // only want one lowest byte
                 break;
             case 1:
                 *(unsigned char*)TxDataPtr = TI_month;
